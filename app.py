@@ -83,7 +83,7 @@ def check_page_to_scrape(url, content, research_goal):  ################
     
     Respond only with true or false.
     """
-    return generate_llm_response(prompt, task_type="summarization").splitlines()
+    return generate_llm_response(prompt, task_type="summarization")
 
 
 def list_pages_to_scrape(search_results, research_goal):  ################
@@ -95,7 +95,7 @@ def list_pages_to_scrape(search_results, research_goal):  ################
     
     Return each url that you have selected on a new line without numbering.
     """
-    return generate_llm_response(prompt, task_type="summarization")
+    return generate_llm_response(prompt, task_type="summarization").splitlines()
 
 def search_searxng(query):
     params = {
@@ -225,7 +225,8 @@ def main_app():
                     st.info(f"**{result['title']}**  \n{result['url']}")
                 
                 urls_to_scrape = list_pages_to_scrape(results, user_query)
-                print(urls_to_scrape)
+
+                st.info(f"Selected urls to visit: {urls_to_scrape}")
                 #print(results)
 
                 # Display search results
