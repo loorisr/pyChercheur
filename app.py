@@ -4,6 +4,7 @@ import litellm
 from firecrawl.firecrawl import FirecrawlApp
 from dotenv import load_dotenv
 import os
+from datetime import datetime
 
 # Load environment variables
 load_dotenv()
@@ -12,11 +13,27 @@ load_dotenv()
 SEARXNG_INSTANCE = os.getenv('SEARXNG_INSTANCE')
 FIRECRAWL_API_KEY = os.getenv('FIRECRAWL_API_KEY')
 FIRECRAWL_ENDPOINT = os.getenv('FIRECRAWL_ENDPOINT')
-SEARCH_WIDTH = 1
+SEARCH_WIDTH = 3
 SEARCH_DEPTH = 1
 
 # Initialize APIs
 firecrawl = FirecrawlApp(api_key=FIRECRAWL_API_KEY, api_url=FIRECRAWL_ENDPOINT)
+
+
+def system_prompt():
+    now = datetime.now().isoformat()
+    return f"""You are an expert researcher. Today is {now}. Follow these instructions when responding:
+  - You may be asked to research subjects that is after your knowledge cutoff, assume the user is right when presented with news.
+  - The user is a highly experienced analyst, no need to simplify it, be as detailed as possible and make sure your response is correct.
+  - Be highly organized.
+  - Suggest solutions that I didn't think about.
+  - Be proactive and anticipate my needs.
+  - Treat me as an expert in all subject matter.
+  - Mistakes erode my trust, so be accurate and thorough.
+  - Provide detailed explanations, I'm comfortable with lots of detail.
+  - Value good arguments over authorities, the source is irrelevant.
+  - Consider new technologies and contrarian ideas, not just the conventional wisdom.
+  - You may use high levels of speculation or prediction, just flag it for me."""
 
 # Session state initialization
 if 'learnings' not in st.session_state:
@@ -32,7 +49,7 @@ if 'summarization_model' not in st.session_state:
 if 'llm_provider' not in st.session_state:
     st.session_state.llm_provider = "gemini"  # Default LLM provider
 
-def generate_llm_response(prompt, system_prompt=None, task_type="reasoning"):
+def generate_llm_response(user_prompt, system_prompt=None, task_type="reasoning"):
     """Generate response using LiteLLM."""
     model_name = st.session_state.reasoning_model if task_type == "reasoning" else st.session_state.summarization_model
     model_name = st.session_state.llm_provider + "/" + model_name
@@ -40,7 +57,7 @@ def generate_llm_response(prompt, system_prompt=None, task_type="reasoning"):
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
+    messages.append({"role": "user", "content": user_prompt})
 
     #print(f"Call {model_name} with {messages}")
     
@@ -57,22 +74,21 @@ def generate_llm_response(prompt, system_prompt=None, task_type="reasoning"):
 
 def clarify_query(original_query):
     clarification_prompt = f"""
-    The user submitted this research query: {original_query}
-    What additional information would help better understand their needs?
-    Ask up to 2 clarifying questions, be concise and direct.
+    Given the following query from the user, ask some follow up questions
+    to clarify the research direction. Return a maximum of 3 questions,
+    but feel free to return less if the original query is clear: <query>{original_query}</query>`,
     """
-    return generate_llm_response(clarification_prompt, task_type="reasoning")
+    return generate_llm_response(clarification_prompt, system_prompt=system_prompt(), task_type="reasoning")
 
 def generate_search_queries(research_context):
     prompt = f"""
-    Based on the research context below, generate {SEARCH_WIDTH} diverse search queries 
-    to answer to it.
-    
-    Research Context: {research_context}
-    
+    Given the following prompt from the user, generate a list of SERP queries
+    to research the topic. Return a maximum of {SEARCH_WIDTH} queries,
+    but feel free to return less if the original prompt is clear.
+    Make sure each query is unique and not similar to each other: <prompt>{research_context}</prompt>
     Return each query on a new line without numbering.
     """
-    search_queries = generate_llm_response(prompt, task_type="reasoning")
+    search_queries = generate_llm_response(prompt, system_prompt=system_prompt(), task_type="reasoning")
     return search_queries.splitlines()
 
 def check_page_to_scrape(url, content, research_goal):  ################
@@ -83,7 +99,7 @@ def check_page_to_scrape(url, content, research_goal):  ################
     
     Respond only with true or false.
     """
-    return generate_llm_response(prompt, task_type="summarization")
+    return generate_llm_response(prompt, task_type="reasoning")
 
 
 def list_pages_to_scrape(search_results, research_goal):  ################
@@ -95,7 +111,7 @@ def list_pages_to_scrape(search_results, research_goal):  ################
     
     Return each url that you have selected on a new line without numbering.
     """
-    return generate_llm_response(prompt, task_type="summarization").splitlines()
+    return generate_llm_response(prompt, task_type="reasoning").splitlines()
 
 def search_searxng(query):
     params = {
@@ -111,7 +127,13 @@ def search_searxng(query):
         response = requests.get(f"{SEARXNG_INSTANCE}/search", params=params)
         urls = [item["url"] for item in response.json()["results"][:5]]
         #print(f"results: {urls}")
-        return response.json()["results"]#[:5]
+        results = response.json()["results"]
+        search_results = []
+        for item in results:
+            search_results.append({"title": item["title"], "content": item["content"], "url": item["url"]})
+            
+        #print(search_results)
+        return search_results
     except Exception as e:
         st.error(f"Search error: {e}")
         return []
@@ -170,7 +192,7 @@ def settings_page():
         "Reasoning Model",
         ["gpt-4", "llama3-70b", "gemini-1.5-pro", "gemini-2.0-pro-exp-02-05", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-flash"],
         key="reasoning_model",
-        index=5
+        index=4
         )
     st.selectbox(
         "Summarization Model",
@@ -203,10 +225,12 @@ def main_app():
     if user_query:
         if "clarified" not in st.session_state:
             clarification = clarify_query(user_query)
+            print("-"*20)
+            print(clarification)
             st.info(clarification)
-            clarification_answer = st.text_input("Please provide additional details:", value="how to say in 5 languages")
+            clarification_answer = st.text_input("Please provide additional details:", value="how to say it in 5 languages")
             if clarification_answer:
-                user_query += f" {clarification_answer}"
+                user_query += f"\n {clarification_answer}"
                 st.session_state.clarified = True
                 st.rerun()
             return
@@ -214,6 +238,7 @@ def main_app():
         if st.session_state.depth < SEARCH_DEPTH:
             st.write(f"## Search Iteration {st.session_state.depth + 1}")
             search_queries = generate_search_queries(user_query)
+            print("-"*20)
             search_queries = search_queries[:SEARCH_WIDTH]
             st.info(search_queries)
             print(f"Generated search queries {search_queries}")
@@ -222,7 +247,8 @@ def main_app():
                 st.write(f"**Searching:** `{query}`")
                 results = search_searxng(query)
                 for result in results:
-                    st.info(f"**{result['title']}**  \n{result['url']}")
+                    print(result)
+                    st.info(f"**{result['title']}**  \n{result['content']} \n {result['url']}")
                 
                 urls_to_scrape = list_pages_to_scrape(results, user_query)
 
