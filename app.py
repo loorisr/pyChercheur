@@ -14,7 +14,8 @@ SEARXNG_INSTANCE = os.getenv('SEARXNG_INSTANCE')
 FIRECRAWL_API_KEY = os.getenv('FIRECRAWL_API_KEY')
 FIRECRAWL_ENDPOINT = os.getenv('FIRECRAWL_ENDPOINT')
 SEARCH_WIDTH = 3
-SEARCH_DEPTH = 1
+SEARCH_DEPTH = 3
+MAX_PAGE_PER_LEVEL = 5
 
 # Initialize APIs
 firecrawl = FirecrawlApp(api_key=FIRECRAWL_API_KEY, api_url=FIRECRAWL_ENDPOINT)
@@ -91,23 +92,23 @@ def generate_search_queries(research_context):
     search_queries = generate_llm_response(prompt, system_prompt=system_prompt(), task_type="reasoning")
     return search_queries.splitlines()
 
-def check_page_to_scrape(url, content, research_goal):  ################
-    prompt = f"""
-    Analyze this url {url} in relation to: {research_goal}.
-    The summury of this url is {content}.
-    Tell by true or false if it would be interesting to get the complete page or if we can skip it.
+# def check_page_to_scrape(url, content, research_goal):  ################
+#     prompt = f"""
+#     Analyze this url {url} in relation to: {research_goal}.
+#     The summury of this url is {content}.
+#     Tell by true or false if it would be interesting to get the complete page or if we can skip it.
     
-    Respond only with true or false.
-    """
-    return generate_llm_response(prompt, task_type="reasoning")
+#     Respond only with true or false.
+#     """
+#     return generate_llm_response(prompt, task_type="reasoning")
 
 
 def list_pages_to_scrape(search_results, research_goal):  ################
     prompt = f"""
     Analyze theses searches results (url and content) in relation to: {research_goal}.
-    Select only the 3 urls that are the most relevant to answer to the research.
+    Select only a maximum of {MAX_PAGE_PER_LEVEL} urls that are the most relevant to answer to the research.
 
-    Search results: {search_results}
+    <search_results>{search_results}</search_results>
     
     Return each url that you have selected on a new line without numbering.
     """
@@ -153,23 +154,29 @@ def scrape_page(url):
 def analyze_content(content, research_goal):
     prompt = f"""
     Analyze this content in relation to: {research_goal}
-    Extract key insights, facts, statistics, and relevant information.
-    Identify potential gaps needing further investigation.
+    Provide several learnings from this content that are relevant to 
+    Make sure each learning is unique and not similar to each other.
+    The learnings should be concise and to the point, as detailed and information dense as possible.
+    Make sure to include any entities like people, places, companies, products, things, etc in the learnings, as well as any exact metrics, numbers, or dates. 
     
-    Content: {content[:12000]}
-    
-    Provide a concise summary of learnings.
+    <content>{content[:12000]}</content>
     """
     return generate_llm_response(prompt, task_type="summarization")
 
 def generate_report(learnings, sources, research_goal):
     prompt = f"""
-    Compile these key learnings into a comprehensive research report about: {research_goal}
-    Structure with clear sections and include source citations using [number] notation.
+    Given the following prompt from the user, write a final report on the topic
+    using the learnings from research. Make it as as detailed as possible, aim for 3 or more pages,
+    include ALL the learnings from research:
     
-    Learnings: {"\n".join(learnings)}
+    <prompt>{research_goal}</prompt>
     
-    Include a '## Sources' section at the end listing all referenced URLs.
+    Here are all the learnings from previous research:
+    
+    <learnings>{"\n".join(learnings)}</learnings>`.
+    
+    Write the report using markdown and add citation of your sources.
+
     """
     report = generate_llm_response(prompt, task_type="summarization")
     return f"{report}\n\n## Sources\n" + "\n".join(
@@ -220,60 +227,74 @@ def get_content_by_url(data_list, target_url):
 
 def main_app():
     st.title("Deep Research Assistant")
-    user_query = st.text_input("Enter your research question:", value="hello")
+    user_query = st.text_input("Enter your research question:", value="comparaison of SERP API")
 
     if user_query:
         if "clarified" not in st.session_state:
             clarification = clarify_query(user_query)
             print("-"*20)
-            print(clarification)
+            print(f"clarification {clarification}")
+            print("-"*20)
             st.info(clarification)
-            clarification_answer = st.text_input("Please provide additional details:", value="how to say it in 5 languages")
+            clarification_answer = st.text_input("Please provide additional details:", value="list their price, free trial is available. return a comparative table.")
             if clarification_answer:
                 user_query += f"\n {clarification_answer}"
+                print("-"*20)
+                print(f"user_query {user_query}")
+                print("-"*20)
                 st.session_state.clarified = True
                 st.rerun()
             return
 
         if st.session_state.depth < SEARCH_DEPTH:
+            print("-"*20)
+            print(f"Search iteration #{st.session_state.depth}")
             st.write(f"## Search Iteration {st.session_state.depth + 1}")
             search_queries = generate_search_queries(user_query)
-            print("-"*20)
             search_queries = search_queries[:SEARCH_WIDTH]
             st.info(search_queries)
             print(f"Generated search queries {search_queries}")
+            print("-"*20)
             
+            search_results = []
             for query in search_queries:
                 st.write(f"**Searching:** `{query}`")
                 results = search_searxng(query)
-                for result in results:
-                    print(result)
-                    st.info(f"**{result['title']}**  \n{result['content']} \n {result['url']}")
-                
-                urls_to_scrape = list_pages_to_scrape(results, user_query)
-
-                st.info(f"Selected urls to visit: {urls_to_scrape}")
-                #print(results)
-
-                # Display search results
-                for url in urls_to_scrape:
-                    print(url)
-                    result = get_content_by_url(results, url)
-                    st.write(f"Reading **{result['title']}**  \n{result['url']}")
-                    
-                    #to_scrape = check_page_to_scrape(result['url'], result['content'], user_query)
-                    #print(to_scrape)
-                    if 1: #to_scrape:
-                        # Process content
-                        scraped = scrape_page(result['url'])
-                        if scraped and scraped['content']:
-                            st.session_state.sources.append(scraped['url'])
-                            learning = analyze_content(scraped['content'], user_query)
-                            st.info(f"learning of page {scraped['url']} \n {learning}")
-                            st.session_state.learnings.append(learning)
-                    else:
-                        st.info(f"skipping page {result['url']}")
+                search_results.extend(results)
             
+            #print(search_results)
+            
+            for result in search_results:
+                #print(result)
+                st.info(f"**{result['title']}**  \n{result['content']} \n {result['url']}")
+            
+            urls_to_scrape = list_pages_to_scrape(results, user_query)
+
+            print("-"*20)
+            st.info(f"Selected urls to visit: {urls_to_scrape}")
+            print(f"urls_to_scrape {urls_to_scrape}")
+            print("-"*20)
+            #print(results)
+
+            # Display search results
+            for url in urls_to_scrape:
+                print(url)
+                result = get_content_by_url(results, url)
+                st.write(f"Reading **{result['title']}**  \n{result['url']}")
+                
+                #to_scrape = check_page_to_scrape(result['url'], result['content'], user_query)
+                #print(to_scrape)
+                if 1: #to_scrape:
+                    # Process content
+                    scraped = scrape_page(result['url'])
+                    if scraped and scraped['content']:
+                        st.session_state.sources.append(scraped['url'])
+                        learning = analyze_content(scraped['content'], user_query)
+                        st.info(f"learning of page {scraped['url']} \n {learning}")
+                        st.session_state.learnings.append(learning)
+                else:
+                    st.info(f"skipping page {result['url']}")
+        
             st.session_state.depth += 1
             st.rerun()
         else:
@@ -284,6 +305,10 @@ def main_app():
             )
             st.write("## Final Research Report")
             st.markdown(report)
+            
+            print("-"*20)
+            print("Done !")
+            print("-"*20)
             
             # Reset session state
             # keys_to_reset = ['learnings', 'sources', 'depth', 'clarified']
