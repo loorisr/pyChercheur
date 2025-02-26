@@ -1,10 +1,12 @@
 import streamlit as st
 import requests
 import litellm
+import re
 from firecrawl.firecrawl import FirecrawlApp
 from dotenv import load_dotenv
 import os
 from datetime import datetime
+from fpdf import FPDF  # Import the FPDF library
 
 # Load environment variables
 load_dotenv()
@@ -13,9 +15,9 @@ load_dotenv()
 SEARXNG_INSTANCE = os.getenv('SEARXNG_INSTANCE')
 FIRECRAWL_API_KEY = os.getenv('FIRECRAWL_API_KEY')
 FIRECRAWL_ENDPOINT = os.getenv('FIRECRAWL_ENDPOINT')
-SEARCH_WIDTH = 3
-SEARCH_DEPTH = 3
-MAX_PAGE_PER_LEVEL = 5
+SEARCH_WIDTH = int(os.getenv('SEARCH_WIDTH', 3))
+SEARCH_DEPTH = int(os.getenv('SEARCH_DEPTH', 3))
+MAX_PAGE_PER_LEVEL = int(os.getenv('MAX_PAGE_PER_LEVEL', 5))
 
 # Initialize APIs
 firecrawl = FirecrawlApp(api_key=FIRECRAWL_API_KEY, api_url=FIRECRAWL_ENDPOINT)
@@ -112,7 +114,7 @@ def list_pages_to_scrape(search_results, research_goal):  ################
     
     Return each url that you have selected on a new line without numbering.
     """
-    return generate_llm_response(prompt, task_type="reasoning").splitlines()
+    return generate_llm_response(prompt, task_type="reasoning")
 
 def search_searxng(query):
     params = {
@@ -191,7 +193,7 @@ def settings_page():
         "LLM Provider",
         ["openai", "gemini", "ollama", "mistral"],
         key="llm_provider",
-        index=0
+        index=1
     )
     
     st.subheader("Model Selection")
@@ -208,14 +210,23 @@ def settings_page():
         index=2
     )
     
-    st.subheader("API Keys")
+    
+    st.subheader("API Key")
     api_key = st.text_input(f"{llm_provider.capitalize()} API Key", 
                           type="password",
-                          key=f"{llm_provider}_key")
+                          key=f"{llm_provider}_key", value=os.getenv(f"{llm_provider.upper()}_API_KEY"))
     
     if api_key:
         os.environ[f"{llm_provider.upper()}_API_KEY"] = api_key
+        
+    
+    global SEARCH_WIDTH, SEARCH_DEPTH, MAX_PAGE_PER_LEVEL
+    st.subheader("Research settings")
+    st.write("Here you can customize the search depth, width, and max pages per level of the research.")   
 
+    SEARCH_WIDTH = st.number_input("Number of search queries per level", min_value=1, max_value=10, value=SEARCH_WIDTH, key="search_width_input")
+    SEARCH_DEPTH = st.number_input("Number of search iterations", min_value=1, max_value=10, value=SEARCH_DEPTH, key="search_depth_input")
+    MAX_PAGE_PER_LEVEL = st.number_input("Max number of pages to scrape per level", min_value=1, max_value=20, value=MAX_PAGE_PER_LEVEL, key="max_page_per_level_input")
 
 def get_content_by_url(data_list, target_url):
     # Iterate through the list to find the matching URL
@@ -225,9 +236,34 @@ def get_content_by_url(data_list, target_url):
     # Return None if no match is found
     return None
 
+def markdown_to_pdf(markdown_text, filename="report.pdf"):
+    """Converts markdown text to a PDF file using FPDF."""
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+
+    for line in markdown_text.split("\n"):
+        if line.startswith("#"):  # Handle headers
+            if line.startswith("##"):
+                pdf.set_font("Arial", 'B', size=14)
+            elif line.startswith("###"):
+                pdf.set_font("Arial", 'B', size=12)
+            else:
+                pdf.set_font("Arial", 'B', size=16)
+            pdf.cell(200, 10, txt=line.replace("#", "").strip(), ln=True)
+            pdf.set_font("Arial", size=12)
+        elif line.startswith("["): #handle link like [1] url.com
+          pdf.cell(200, 5, txt=line, ln=True)
+        elif line.strip() == "":  # Add paragraph break
+            pdf.cell(200, 5, txt="", ln=True)
+        else:
+            pdf.multi_cell(0, 5, txt=line)
+        
+    pdf.output(filename)
+
 def main_app():
     st.title("Deep Research Assistant")
-    user_query = st.text_input("Enter your research question:", value="comparaison of SERP API")
+    user_query = st.text_input("Enter your research question:") # , value="comparaison of scraping API")
 
     if user_query:
         if "clarified" not in st.session_state:
@@ -236,7 +272,7 @@ def main_app():
             print(f"clarification {clarification}")
             print("-"*20)
             st.info(clarification)
-            clarification_answer = st.text_input("Please provide additional details:", value="list their price, free trial is available. return a comparative table.")
+            clarification_answer = st.text_input("Please provide additional details:") #, value="list their price, free trial is available. return a comparative table.")
             if clarification_answer:
                 user_query += f"\n {clarification_answer}"
                 print("-"*20)
@@ -269,6 +305,11 @@ def main_app():
                 st.info(f"**{result['title']}**  \n{result['content']} \n {result['url']}")
             
             urls_to_scrape = list_pages_to_scrape(results, user_query)
+            
+            url_pattern = r'https?://[^\s]+'
+
+            # Find all URLs in the string
+            urls_to_scrape = re.findall(url_pattern, urls_to_scrape)
 
             print("-"*20)
             st.info(f"Selected urls to visit: {urls_to_scrape}")
@@ -306,6 +347,17 @@ def main_app():
             st.write("## Final Research Report")
             st.markdown(report)
             
+            # Add a button to export the report to PDF
+            if st.button("Export to PDF"):
+                markdown_to_pdf(report)
+                with open("report.pdf", "rb") as f:
+                    st.download_button(
+                        label="Download PDF",
+                        data=f,
+                        file_name="report.pdf",
+                        mime="application/pdf"
+                    )
+            
             print("-"*20)
             print("Done !")
             print("-"*20)
@@ -324,6 +376,3 @@ if __name__ == "__main__":
         main_app()
     elif page == "Settings":
         settings_page()
-
-
-## run with streamlit run app.py   --server.headless true

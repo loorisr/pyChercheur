@@ -7,6 +7,7 @@ requires-python = ">=3.13"
 dependencies = [
     "dotenv>=0.9.9",
     "firecrawl-py>=1.12.0",
+    "fpdf>=1.7.2",
     "litellm>=1.61.16",
     "requests>=2.32.3",
     "streamlit>=1.42.2",
