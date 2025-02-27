@@ -83,13 +83,15 @@ def clarify_query(original_query):
     """
     return generate_llm_response(clarification_prompt, system_prompt=system_prompt(), task_type="reasoning")
 
-def generate_search_queries(research_context):
+def generate_search_queries(research_context, learnings):
     prompt = f"""
     Given the following prompt from the user, generate a list of SERP queries
     to research the topic. Return a maximum of {SEARCH_WIDTH} queries,
     but feel free to return less if the original prompt is clear.
     Make sure each query is unique and not similar to each other: <prompt>{research_context}</prompt>
-    Return each query on a new line without numbering.
+    Here are the learning your already have. So if you make a new search, make sure it will improve the analysis.
+    Return each query on a new line without numbering. and only the queries.
+    <learnings>{learnings}</learnings>
     """
     search_queries = generate_llm_response(prompt, system_prompt=system_prompt(), task_type="reasoning")
     return search_queries.splitlines()
@@ -112,7 +114,7 @@ def list_pages_to_scrape(search_results, research_goal):  ################
 
     <search_results>{search_results}</search_results>
     
-    Return each url that you have selected on a new line without numbering.
+    Return each url that you have selected on a new line without numbering. and only the urls.
     """
     return generate_llm_response(prompt, task_type="reasoning")
 
@@ -153,14 +155,17 @@ def scrape_page(url):
         st.error(f"Firecrawl error: {e}")
         return None
 
-def analyze_content(content, research_goal):
+def analyze_content(url, content, research_goal):
     prompt = f"""
     Analyze this content in relation to: {research_goal}
     Provide several learnings from this content that are relevant to 
     Make sure each learning is unique and not similar to each other.
     The learnings should be concise and to the point, as detailed and information dense as possible.
     Make sure to include any entities like people, places, companies, products, things, etc in the learnings, as well as any exact metrics, numbers, or dates. 
+    If needed you can include links that seems very relevant in this page and that you would like to explore.
+    Return a markdown with page url as the title and list for the learnings.
     
+    <url>{url}</url>
     <content>{content[:12000]}</content>
     """
     return generate_llm_response(prompt, task_type="summarization")
@@ -263,7 +268,8 @@ def markdown_to_pdf(markdown_text, filename="report.pdf"):
 
 def main_app():
     st.title("Deep Research Assistant")
-    user_query = st.text_input("Enter your research question:") # , value="comparaison of scraping API")
+    st.header("pyChercheur")
+    user_query = st.text_input("Enter your research question:")#, value="comparaison of scraping API")
 
     if user_query:
         if "clarified" not in st.session_state:
@@ -272,7 +278,7 @@ def main_app():
             print(f"clarification {clarification}")
             print("-"*20)
             st.info(clarification)
-            clarification_answer = st.text_input("Please provide additional details:") #, value="list their price, free trial is available. return a comparative table.")
+            clarification_answer = st.text_input("Please provide additional details:")#, value="list their price, free trial is available. return a comparative table.")
             if clarification_answer:
                 user_query += f"\n {clarification_answer}"
                 print("-"*20)
@@ -286,7 +292,7 @@ def main_app():
             print("-"*20)
             print(f"Search iteration #{st.session_state.depth}")
             st.write(f"## Search Iteration {st.session_state.depth + 1}")
-            search_queries = generate_search_queries(user_query)
+            search_queries = generate_search_queries(user_query, st.session_state.learnings)
             search_queries = search_queries[:SEARCH_WIDTH]
             st.info(search_queries)
             print(f"Generated search queries {search_queries}")
@@ -305,10 +311,10 @@ def main_app():
                 st.info(f"**{result['title']}**  \n{result['content']} \n {result['url']}")
             
             urls_to_scrape = list_pages_to_scrape(results, user_query)
-            
-            url_pattern = r'https?://[^\s]+'
-
+            urls_to_scrape = urls_to_scrape[:MAX_PAGE_PER_LEVEL]
+                        
             # Find all URLs in the string
+            url_pattern = r'https?://[^\s]+'
             urls_to_scrape = re.findall(url_pattern, urls_to_scrape)
 
             print("-"*20)
@@ -322,19 +328,14 @@ def main_app():
                 print(url)
                 result = get_content_by_url(results, url)
                 st.write(f"Reading **{result['title']}**  \n{result['url']}")
-                
-                #to_scrape = check_page_to_scrape(result['url'], result['content'], user_query)
-                #print(to_scrape)
-                if 1: #to_scrape:
-                    # Process content
-                    scraped = scrape_page(result['url'])
-                    if scraped and scraped['content']:
-                        st.session_state.sources.append(scraped['url'])
-                        learning = analyze_content(scraped['content'], user_query)
-                        st.info(f"learning of page {scraped['url']} \n {learning}")
-                        st.session_state.learnings.append(learning)
-                else:
-                    st.info(f"skipping page {result['url']}")
+
+                # Scraping page ## possibility to url the batch scrape to have faster results
+                scraped = scrape_page(result['url'])
+                if scraped and scraped['content']:
+                    st.session_state.sources.append(scraped['url'])
+                    learning = analyze_content(scraped['url'], scraped['content'], user_query)
+                    st.info(f"learnings of page {scraped['url']} \n {learning}")
+                    st.session_state.learnings.append(learning)
         
             st.session_state.depth += 1
             st.rerun()
